@@ -1,4 +1,4 @@
-module github.com/AleBustamante/proyecto_final_tecweb/tree/main/backend
+module github.com/AleBustamante/proyecto_pruebas_unitarias
 
 go 1.23.3
 

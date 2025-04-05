@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	db "github.com/AleBustamante/proyecto_final_tecweb/tree/main/backend/db"
-	m "github.com/AleBustamante/proyecto_final_tecweb/tree/main/backend/models"
+	db "github.com/AleBustamante/proyecto_pruebas_unitarias/db"
+	m "github.com/AleBustamante/proyecto_pruebas_unitarias/models"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"

@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	m "github.com/AleBustamante/proyecto_final_tecweb/tree/main/backend/models"
+	m "github.com/AleBustamante/proyecto_pruebas_unitarias/models"
 	"github.com/joho/godotenv"
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
 )
