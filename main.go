@@ -1,13 +1,7 @@
 package main
 
 import (
-	//"net/http"
-
-	//"github.com/gin-gonic/gin"
-
-	api "github.com/AleBustamante/proyecto_final_tecweb/tree/main/backend/routes"
-	//"github.com/AleBustamante/proyecto_final_tecweb/tree/main/backend/db"
-
+	api "github.com/AleBustamante/proyecto_pruebas_unitarias/routes"
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
 )
 
