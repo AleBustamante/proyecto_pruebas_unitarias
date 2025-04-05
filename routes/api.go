@@ -41,16 +41,6 @@ func loadEnv() {
 }
 
 func ExposeAPI() {
-	// Redirect http traffic to https
-	go func() {
-		log.Println("Starting HTTP to HTTPS redirection server...")
-		if err := http.ListenAndServe(":80", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			target := "https://" + r.Host + r.URL.String()
-			http.Redirect(w, r, target, http.StatusMovedPermanently)
-		})); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP Redirection server failed: %v\n", err)
-		}
-	}()
 
 	loadEnv()
 	gin.SetMode(gin.ReleaseMode)
@@ -70,7 +60,6 @@ func ExposeAPI() {
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-Frame-Options", "DENY")
 		c.Header("X-XSS-Protection", "1; mode=block")
-		c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		c.Next()
 	})
 
@@ -370,11 +359,11 @@ func ExposeAPI() {
 			c.JSON(http.StatusOK, gin.H{"message": "User deleted successfully"})
 		})
 	}
-	certFile := "/etc/letsencrypt/live/tecweb-project.duckdns.org/fullchain.pem"
-	keyFile := "/etc/letsencrypt/live/tecweb-project.duckdns.org/privkey.pem"
 
+	// Cambiamos para utilizar HTTP en lugar de HTTPS para entorno local
+	port := "8080" // Puerto para desarrollo local
 	srv := &http.Server{
-		Addr:         ":443",
+		Addr:         ":" + port,
 		Handler:      router,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
@@ -383,7 +372,8 @@ func ExposeAPI() {
 
 	// Graceful shutdown
 	go func() {
-		if err := srv.ListenAndServeTLS(certFile, keyFile); err != nil && err != http.ErrServerClosed {
+		log.Printf("Server starting on port %s...\n", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Failed to initialize server: %v\n", err)
 		}
 	}()
