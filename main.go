@@ -2,7 +2,6 @@ package main
 
 import (
 	api "github.com/AleBustamante/proyecto_pruebas_unitarias/routes"
-
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
 )
 
