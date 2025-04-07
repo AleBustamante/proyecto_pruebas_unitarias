@@ -34,6 +34,9 @@ func getDBConnection() (*sql.DB, error) {
 
 func InsertNewUser(user m.User) (m.User, error) {
 	db, err := getDBConnection()
+	if err != nil {
+		return m.User{}, err
+	}
 
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -50,6 +53,7 @@ func InsertNewUser(user m.User) (m.User, error) {
 	if err != nil {
 		return m.User{}, err
 	}
+
 	user.ID = int(id)
 	return user, nil
 }
@@ -91,7 +95,7 @@ func FindMovieById(id string) (m.Movie, error) {
 	movie.Genres = []m.Genre{}
 
 	// Parse genres if they exist
-	if err == nil && (genreIDs.Valid && genreNames.Valid) {
+	if genreIDs.Valid && genreNames.Valid {
 		movie.Genres = parseGenres(genreIDs, genreNames)
 	}
 	return movie, nil
@@ -152,7 +156,7 @@ func FindByTitleOrGenre(title, genre string) ([]m.Movie, error) {
 		movie.Genres = []m.Genre{}
 
 		// Parse genres if they exist
-		if err == nil && (genreIDs.Valid && genreNames.Valid) {
+		if genreIDs.Valid && genreNames.Valid {
 			movie.Genres = parseGenres(genreIDs, genreNames)
 		}
 		movies = append(movies, movie)

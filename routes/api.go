@@ -20,20 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/joho/godotenv"
-	"golang.org/x/time/rate"
 )
-
-var limiter = rate.NewLimiter(5, 10)
-
-// Middleware para limitar la tasa de peticiones
-func rateLimitMiddleware(c *gin.Context) {
-	if !limiter.Allow() {
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": "Too many requests"})
-		c.Abort()
-		return
-	}
-	c.Next()
-}
 
 // Cargar variables de entorno
 func loadEnv() {
