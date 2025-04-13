@@ -1,6 +1,7 @@
 package main
 
 import (
+	db "github.com/AleBustamante/proyecto_pruebas_unitarias/db"
 	api "github.com/AleBustamante/proyecto_pruebas_unitarias/routes"
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
 )
@@ -21,28 +22,6 @@ type Product struct {
 }
 
 func main() {
-
-	api.ExposeAPI()
-
-	// Creamos un router de Gin
-	//router := gin.Default()
-
-	// Definimos la ruta GET /hola
-	//router.GET("/hola", func(c *gin.Context) {
-	//response := Response{
-	//Message: "¡Hola desde el servidor Go con Gin!",
-	//}
-
-	//c.JSON(http.StatusOK, response)
-	//})
-	//router.POST("/insert", func(c *gin.Context) {
-	//response := Response{
-	//Message: "This is a confirmation message",
-	//}
-
-	//c.JSON(http.StatusOK, response)
-	//})
-
-	// Iniciamos el servidor en el puerto 8080
-	//router.Run(":8080")
+	dbService := db.NewDBService()
+	api.ExposeAPI(dbService)
 }
