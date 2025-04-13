@@ -29,3 +29,5 @@ go.work.sum
 
 # Binary
 *proyecto_pruebas_unitarias
+
+*coverage.html
