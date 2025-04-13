@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"io"
 	"log"
@@ -14,22 +13,88 @@ import (
 	"syscall"
 	"time"
 
-	db "github.com/AleBustamante/proyecto_pruebas_unitarias/db"
 	m "github.com/AleBustamante/proyecto_pruebas_unitarias/models"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/joho/godotenv"
 )
 
-// Cargar variables de entorno
-func loadEnv() {
-	if err := godotenv.Load(); err != nil {
-		log.Printf("Error loading .env file: %v", err)
+// DBService define la interfaz para las operaciones de base de datos
+type DBService interface {
+	// Usuarios
+	ValidateUser(username, password string) (m.User, error)
+	InsertNewUser(user m.User) (m.User, error)
+	GetUserByID(userID int) (m.User, error)
+	UpdateUser(userID int, username, email, password string) error
+	DeleteUser(userID int) error
+
+	// Películas
+	FindMovieById(id string) (m.Movie, error)
+	FindByTitleOrGenre(title, genre string) ([]m.Movie, error)
+
+	// Watchlist
+	GetUserWatchlist(userID int, watchedFilter *bool) ([]m.WatchlistItem, error)
+	AddToWatchlist(userID, movieID int, watched bool) error
+	UpdateWatchedStatus(userID, movieID int, watched bool) error
+	RemoveFromWatchlist(userID, movieID int) error
+}
+
+// ConfigService define la interfaz para obtener la configuración
+type ConfigService interface {
+	GetJWTSecret() string
+	GetServerPort() string
+	GetAllowedOrigins() []string
+}
+
+// DefaultConfigService implementa ConfigService usando variables de entorno
+type DefaultConfigService struct {
+	jwtSecret      string
+	serverPort     string
+	allowedOrigins []string
+}
+
+// NewDefaultConfigService crea una nueva instancia de DefaultConfigService
+func NewDefaultConfigService(jwtSecret, serverPort string, origins []string) *DefaultConfigService {
+	return &DefaultConfigService{
+		jwtSecret:      jwtSecret,
+		serverPort:     serverPort,
+		allowedOrigins: origins,
 	}
 }
 
-// Configurar el logger de Gin
+// GetJWTSecret devuelve el secreto JWT
+func (c *DefaultConfigService) GetJWTSecret() string {
+	return c.jwtSecret
+}
+
+// GetServerPort devuelve el puerto del servidor
+func (c *DefaultConfigService) GetServerPort() string {
+	return c.serverPort
+}
+
+// GetAllowedOrigins devuelve los orígenes permitidos para CORS
+func (c *DefaultConfigService) GetAllowedOrigins() []string {
+	return c.allowedOrigins
+}
+
+// API estructura principal que contiene las dependencias
+type API struct {
+	DB     DBService
+	Config ConfigService
+	Router *gin.Engine
+}
+
+// NewAPI crea una nueva instancia de la API
+func NewAPI(db DBService, config ConfigService) *API {
+	api := &API{
+		DB:     db,
+		Config: config,
+	}
+	api.Router = api.setupRouter()
+	return api
+}
+
+// setupLogger configura el logger de Gin
 func setupLogger() {
 	if gin.Mode() == gin.ReleaseMode {
 		f, err := os.Create("gin.log")
@@ -40,7 +105,7 @@ func setupLogger() {
 	}
 }
 
-// Middleware para añadir cabeceras de seguridad
+// securityHeadersMiddleware añade cabeceras de seguridad
 func securityHeadersMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("X-Content-Type-Options", "nosniff")
@@ -50,14 +115,10 @@ func securityHeadersMiddleware() gin.HandlerFunc {
 	}
 }
 
-// Configurar CORS
-func setupCORS() cors.Config {
+// setupCORS configura CORS
+func (a *API) setupCORS() cors.Config {
 	config := cors.DefaultConfig()
-	config.AllowOrigins = []string{
-		"http://localhost:4200",
-		"http://localhost:8080",
-		"https://alebustamante.github.io",
-	}
+	config.AllowOrigins = a.Config.GetAllowedOrigins()
 	config.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
 	config.AllowHeaders = []string{
 		"Origin",
@@ -73,8 +134,8 @@ func setupCORS() cors.Config {
 	return config
 }
 
-// Controlador para login
-func handleLogin(c *gin.Context) {
+// handleLogin maneja el inicio de sesión
+func (a *API) handleLogin(c *gin.Context) {
 	var loginData struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -85,13 +146,13 @@ func handleLogin(c *gin.Context) {
 		return
 	}
 
-	user, err := db.ValidateUser(loginData.Username, loginData.Password)
+	user, err := a.DB.ValidateUser(loginData.Username, loginData.Password)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
-	token, err := generateToken(user.ID)
+	token, err := a.generateToken(user.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not generate token"})
 		return
@@ -107,15 +168,16 @@ func handleLogin(c *gin.Context) {
 	})
 }
 
-// Controlador para obtener una película por ID
-func handleGetMovie(c *gin.Context) {
+// handleGetMovie obtiene una película por ID
+func (a *API) handleGetMovie(c *gin.Context) {
 	id := c.Param("id")
-	movie, err := db.FindMovieById(id)
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Movie not found"})
-		return
-	}
+	movie, err := a.DB.FindMovieById(id)
 	if err != nil {
+		// Verificar si es un error de "no encontrado"
+		if err.Error() == "movie not found" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Movie not found"})
+			return
+		}
 		log.Printf("Error finding movie: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
@@ -123,8 +185,8 @@ func handleGetMovie(c *gin.Context) {
 	c.JSON(http.StatusOK, movie)
 }
 
-// Controlador para buscar películas
-func handleSearchMovies(c *gin.Context) {
+// handleSearchMovies busca películas
+func (a *API) handleSearchMovies(c *gin.Context) {
 	title := c.Query("q")
 	genre := c.Query("genre")
 
@@ -133,7 +195,7 @@ func handleSearchMovies(c *gin.Context) {
 		return
 	}
 
-	movies, err := db.FindByTitleOrGenre(title, genre)
+	movies, err := a.DB.FindByTitleOrGenre(title, genre)
 	if err != nil {
 		log.Printf("Error searching movies: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
@@ -142,15 +204,15 @@ func handleSearchMovies(c *gin.Context) {
 	c.JSON(http.StatusOK, movies)
 }
 
-// Controlador para registrar un nuevo usuario
-func handleRegister(c *gin.Context) {
+// handleRegister registra un nuevo usuario
+func (a *API) handleRegister(c *gin.Context) {
 	var user m.User
 	if err := c.ShouldBindJSON(&user); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	user, err := db.InsertNewUser(user)
+	user, err := a.DB.InsertNewUser(user)
 	if err != nil {
 		log.Printf("Error registering user: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
@@ -164,8 +226,8 @@ func handleRegister(c *gin.Context) {
 	})
 }
 
-// Controlador para obtener la lista de seguimiento
-func handleGetWatchlist(c *gin.Context) {
+// handleGetWatchlist obtiene la lista de seguimiento
+func (a *API) handleGetWatchlist(c *gin.Context) {
 	userID, err := strconv.Atoi(c.Query("user_id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user_id"})
@@ -184,7 +246,7 @@ func handleGetWatchlist(c *gin.Context) {
 		watched = &watchedBool
 	}
 
-	watchlist, err := db.GetUserWatchlist(userID, watched)
+	watchlist, err := a.DB.GetUserWatchlist(userID, watched)
 	if err != nil {
 		log.Printf("Error getting watchlist: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
@@ -194,8 +256,8 @@ func handleGetWatchlist(c *gin.Context) {
 	c.JSON(http.StatusOK, watchlist)
 }
 
-// Controlador para añadir a la lista de seguimiento
-func handleAddToWatchlist(c *gin.Context) {
+// handleAddToWatchlist añade a la lista de seguimiento
+func (a *API) handleAddToWatchlist(c *gin.Context) {
 	userID, err := strconv.Atoi(c.Query("user_id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user_id"})
@@ -212,7 +274,7 @@ func handleAddToWatchlist(c *gin.Context) {
 		return
 	}
 
-	if err := db.AddToWatchlist(userID, movieID, watched); err != nil {
+	if err := a.DB.AddToWatchlist(userID, movieID, watched); err != nil {
 		log.Printf("Error adding to watchlist: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
@@ -221,8 +283,8 @@ func handleAddToWatchlist(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Watchlist updated successfully"})
 }
 
-// Controlador para actualizar el estado de visto
-func handleUpdateWatchedStatus(c *gin.Context) {
+// handleUpdateWatchedStatus actualiza el estado de visto
+func (a *API) handleUpdateWatchedStatus(c *gin.Context) {
 	userID, err := strconv.Atoi(c.Query("user_id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user_id"})
@@ -239,7 +301,7 @@ func handleUpdateWatchedStatus(c *gin.Context) {
 		return
 	}
 
-	if err := db.UpdateWatchedStatus(userID, movieID, watched); err != nil {
+	if err := a.DB.UpdateWatchedStatus(userID, movieID, watched); err != nil {
 		log.Printf("Error updating watched status: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
@@ -248,8 +310,8 @@ func handleUpdateWatchedStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Watched status updated successfully"})
 }
 
-// Controlador para eliminar de la lista de seguimiento
-func handleRemoveFromWatchlist(c *gin.Context) {
+// handleRemoveFromWatchlist elimina de la lista de seguimiento
+func (a *API) handleRemoveFromWatchlist(c *gin.Context) {
 	userID, err := strconv.Atoi(c.Query("user_id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user_id"})
@@ -261,7 +323,7 @@ func handleRemoveFromWatchlist(c *gin.Context) {
 		return
 	}
 
-	if err := db.RemoveFromWatchlist(userID, movieID); err != nil {
+	if err := a.DB.RemoveFromWatchlist(userID, movieID); err != nil {
 		log.Printf("Error removing from watchlist: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
@@ -270,8 +332,8 @@ func handleRemoveFromWatchlist(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Movie removed from watchlist"})
 }
 
-// Controlador para obtener un usuario por ID
-func handleGetUser(c *gin.Context) {
+// handleGetUser obtiene un usuario por ID
+func (a *API) handleGetUser(c *gin.Context) {
 	requestedUserID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
@@ -285,7 +347,7 @@ func handleGetUser(c *gin.Context) {
 		return
 	}
 
-	user, err := db.GetUserByID(requestedUserID)
+	user, err := a.DB.GetUserByID(requestedUserID)
 	if err != nil {
 		log.Printf("Error getting user: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
@@ -299,8 +361,8 @@ func handleGetUser(c *gin.Context) {
 	})
 }
 
-// Controlador para actualizar un usuario
-func handleUpdateUser(c *gin.Context) {
+// handleUpdateUser actualiza un usuario
+func (a *API) handleUpdateUser(c *gin.Context) {
 	requestedUserID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
@@ -325,7 +387,7 @@ func handleUpdateUser(c *gin.Context) {
 		return
 	}
 
-	if err := db.UpdateUser(requestedUserID, updateData.Username, updateData.Email, updateData.Password); err != nil {
+	if err := a.DB.UpdateUser(requestedUserID, updateData.Username, updateData.Email, updateData.Password); err != nil {
 		log.Printf("Error updating user: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
@@ -334,8 +396,8 @@ func handleUpdateUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "User updated successfully"})
 }
 
-// Controlador para eliminar un usuario
-func handleDeleteUser(c *gin.Context) {
+// handleDeleteUser elimina un usuario
+func (a *API) handleDeleteUser(c *gin.Context) {
 	requestedUserID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
@@ -348,7 +410,7 @@ func handleDeleteUser(c *gin.Context) {
 		return
 	}
 
-	if err := db.DeleteUser(requestedUserID); err != nil {
+	if err := a.DB.DeleteUser(requestedUserID); err != nil {
 		log.Printf("Error deleting user: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
@@ -357,59 +419,59 @@ func handleDeleteUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "User deleted successfully"})
 }
 
-// Configurar rutas públicas
-func setupPublicRoutes(router *gin.Engine) {
-	router.POST("/login", handleLogin)
-	router.GET("/movie/:id", handleGetMovie)
-	router.GET("/search", handleSearchMovies)
-	router.POST("/register", handleRegister)
+// setupPublicRoutes configura rutas públicas
+func (a *API) setupPublicRoutes(router *gin.Engine) {
+	router.POST("/login", a.handleLogin)
+	router.GET("/movie/:id", a.handleGetMovie)
+	router.GET("/search", a.handleSearchMovies)
+	router.POST("/register", a.handleRegister)
 }
 
-// Configurar rutas protegidas
-func setupProtectedRoutes(router *gin.Engine) {
+// setupProtectedRoutes configura rutas protegidas
+func (a *API) setupProtectedRoutes(router *gin.Engine) {
 	protected := router.Group("/")
-	protected.Use(authMiddleware())
+	protected.Use(a.authMiddleware())
 
 	// Rutas de watchlist
-	protected.GET("/watchlist", handleGetWatchlist)
-	protected.POST("/watchlist", handleAddToWatchlist)
-	protected.PATCH("/watchlist", handleUpdateWatchedStatus)
-	protected.DELETE("/watchlist", handleRemoveFromWatchlist)
+	protected.GET("/watchlist", a.handleGetWatchlist)
+	protected.POST("/watchlist", a.handleAddToWatchlist)
+	protected.PATCH("/watchlist", a.handleUpdateWatchedStatus)
+	protected.DELETE("/watchlist", a.handleRemoveFromWatchlist)
 
 	// Rutas de usuario
-	protected.GET("/user/:id", handleGetUser)
-	protected.PATCH("/user/:id", handleUpdateUser)
-	protected.DELETE("/user/:id", handleDeleteUser)
+	protected.GET("/user/:id", a.handleGetUser)
+	protected.PATCH("/user/:id", a.handleUpdateUser)
+	protected.DELETE("/user/:id", a.handleDeleteUser)
 }
 
-// Configurar y devolver un router de Gin
-func SetupRouter() *gin.Engine {
+// setupRouter configura y devuelve un router de Gin
+func (a *API) setupRouter() *gin.Engine {
 	// Configuración básica del router
 	gin.SetMode(gin.ReleaseMode)
 	setupLogger()
 
 	router := gin.Default()
 	router.Use(securityHeadersMiddleware())
-	router.Use(cors.New(setupCORS()))
+	router.Use(cors.New(a.setupCORS()))
 
 	// Configurar rutas
-	setupPublicRoutes(router)
-	setupProtectedRoutes(router)
+	a.setupPublicRoutes(router)
+	a.setupProtectedRoutes(router)
 
 	return router
 }
 
-// Generar token JWT
-func generateToken(userID int) (string, error) {
+// generateToken genera un token JWT
+func (a *API) generateToken(userID int) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"user_id": userID,
 		"exp":     time.Now().Add(time.Hour * 24).Unix(),
 	})
-	return token.SignedString([]byte(os.Getenv("JWT_SECRET")))
+	return token.SignedString([]byte(a.Config.GetJWTSecret()))
 }
 
-// Middleware para autenticación JWT
-func authMiddleware() gin.HandlerFunc {
+// authMiddleware middleware para autenticación JWT
+func (a *API) authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -423,7 +485,7 @@ func authMiddleware() gin.HandlerFunc {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
-			return []byte(os.Getenv("JWT_SECRET")), nil
+			return []byte(a.Config.GetJWTSecret()), nil
 		})
 
 		if err != nil {
@@ -442,17 +504,12 @@ func authMiddleware() gin.HandlerFunc {
 	}
 }
 
-// Función principal que expone la API
-func ExposeAPI() {
-	loadEnv()
-
-	router := SetupRouter()
-
-	// Configurar el servidor HTTP
-	port := "8080" // Puerto para desarrollo local
+// Run inicia el servidor HTTP
+func (a *API) Run() {
+	port := a.Config.GetServerPort()
 	srv := &http.Server{
 		Addr:         ":" + port,
-		Handler:      router,
+		Handler:      a.Router,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -481,4 +538,29 @@ func ExposeAPI() {
 	}
 
 	log.Println("Server exiting")
+}
+
+// CreateDefaultAPI crea una instancia de API con implementaciones por defecto
+func CreateDefaultAPI(dbService DBService, jwtSecret, port string, allowedOrigins []string) *API {
+	config := NewDefaultConfigService(jwtSecret, port, allowedOrigins)
+	return NewAPI(dbService, config)
+}
+
+// ExposeAPI función principal que expone la API
+func ExposeAPI(dbService DBService) {
+	// Configuración por defecto
+	jwtSecret := os.Getenv("JWT_SECRET")
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080" // Puerto para desarrollo local
+	}
+
+	allowedOrigins := []string{
+		"http://localhost:4200",
+		"http://localhost:8080",
+		"https://alebustamante.github.io",
+	}
+
+	api := CreateDefaultAPI(dbService, jwtSecret, port, allowedOrigins)
+	api.Run()
 }

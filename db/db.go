@@ -16,27 +16,80 @@ import (
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
 )
 
-func getDBConnection() (*sql.DB, error) {
+// DBServiceImpl implementa la interfaz DBService
+type DBServiceImpl struct {
+	// Configuración adicional si es necesaria
+	dbURL string // URL de conexión a la base de datos
+}
+
+// NewDBService crea una nueva instancia de DBServiceImpl usando variables de entorno
+func NewDBService() *DBServiceImpl {
 	err := godotenv.Load()
 	if err != nil {
-		log.Fatal("Error loading .env file")
+		log.Printf("Error loading .env file: %v", err)
+		// Continuar de todos modos, pueden existir variables de entorno
 	}
 	db_name := os.Getenv("TURSO_DB_NAME")
 	db_token := os.Getenv("TURSO_AUTH_TOKEN")
 	url := "libsql://" + db_name + ".turso.io?authToken=" + db_token
 
-	db, err := sql.Open("libsql", url)
+	return &DBServiceImpl{
+		dbURL: url,
+	}
+}
+
+// NewDBServiceWithURL crea una nueva instancia de DBServiceImpl con una URL específica
+// Esto facilitará las pruebas al permitir inyectar una URL de prueba
+func NewDBServiceWithURL(url string) *DBServiceImpl {
+	return &DBServiceImpl{
+		dbURL: url,
+	}
+}
+
+// getDBConnection obtiene una conexión a la base de datos
+func (s *DBServiceImpl) getDBConnection() (*sql.DB, error) {
+	db, err := sql.Open("libsql", s.dbURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open db %s: %s", url, err)
+		return nil, fmt.Errorf("failed to open db %s: %s", s.dbURL, err)
 	}
 	return db, nil
 }
 
-func InsertNewUser(user m.User) (m.User, error) {
-	db, err := getDBConnection()
+// ValidateUser valida un usuario
+func (s *DBServiceImpl) ValidateUser(username, password string) (m.User, error) {
+	db, err := s.getDBConnection()
 	if err != nil {
 		return m.User{}, err
 	}
+	defer db.Close()
+
+	var user m.User
+	query := `SELECT id, username, email, password FROM users WHERE username = ?`
+
+	err = db.QueryRow(query, username).Scan(&user.ID, &user.Username, &user.Email, &user.Password)
+	if err == sql.ErrNoRows {
+		return m.User{}, errors.New("invalid credentials")
+	}
+	if err != nil {
+		return m.User{}, err
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)); err != nil {
+		return m.User{}, errors.New("invalid credentials")
+	}
+	// No devolver la contraseña en la respuesta
+	user.Password = ""
+
+	return user, nil
+}
+
+// InsertNewUser inserta un nuevo usuario
+func (s *DBServiceImpl) InsertNewUser(user m.User) (m.User, error) {
+	db, err := s.getDBConnection()
+	if err != nil {
+		return m.User{}, err
+	}
+	defer db.Close()
 
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -55,11 +108,13 @@ func InsertNewUser(user m.User) (m.User, error) {
 	}
 
 	user.ID = int(id)
+	user.Password = "" // No devolver la contraseña
 	return user, nil
 }
 
-func FindMovieById(id string) (m.Movie, error) {
-	db, err := getDBConnection()
+// FindMovieById encuentra una película por su ID
+func (s *DBServiceImpl) FindMovieById(id string) (m.Movie, error) {
+	db, err := s.getDBConnection()
 	if err != nil {
 		return m.Movie{}, err
 	}
@@ -101,8 +156,9 @@ func FindMovieById(id string) (m.Movie, error) {
 	return movie, nil
 }
 
-func FindByTitleOrGenre(title, genre string) ([]m.Movie, error) {
-	db, err := getDBConnection()
+// FindByTitleOrGenre busca películas por título o género
+func (s *DBServiceImpl) FindByTitleOrGenre(title, genre string) ([]m.Movie, error) {
+	db, err := s.getDBConnection()
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +184,7 @@ func FindByTitleOrGenre(title, genre string) ([]m.Movie, error) {
         )`
 		args = append(args, "%"+genre+"%")
 	}
-	query += ` GROUP BY m.id`
+	query += ` GROUP BY m.id ORDER BY m.title`
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -162,123 +218,15 @@ func FindByTitleOrGenre(title, genre string) ([]m.Movie, error) {
 		movies = append(movies, movie)
 	}
 
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
 	return movies, nil
 }
 
-func AddToWatchlist(userID, movieID int, watched bool) error {
-	db, err := getDBConnection()
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
-	query := `
-        INSERT INTO user_watchlist (user_id, movie_id, watched)
-        VALUES (?, ?, ?)
-        ON CONFLICT(user_id, movie_id) DO UPDATE SET watched = ?`
-
-	_, err = db.Exec(query, userID, movieID, watched, watched)
-	return err
-}
-
-func parseGenres(genreIDs, genreNames sql.NullString) []m.Genre {
-	if !genreIDs.Valid || !genreNames.Valid {
-		return []m.Genre{}
-	}
-
-	ids := strings.Split(genreIDs.String, ",")
-	names := strings.Split(genreNames.String, ",")
-
-	// Asegurarse de que tenemos el mismo número de IDs y nombres
-	if len(ids) != len(names) {
-		return []m.Genre{}
-	}
-
-	genres := make([]m.Genre, len(ids))
-	for i := range ids {
-		id, err := strconv.Atoi(strings.TrimSpace(ids[i]))
-		if err != nil {
-			continue
-		}
-		genres[i] = m.Genre{
-			ID:   id,
-			Name: strings.TrimSpace(names[i]),
-		}
-	}
-
-	return genres
-}
-
-func UpdateWatchedStatus(userID, movieID int, watched bool) error {
-	db, err := getDBConnection()
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	query := `UPDATE user_watchlist SET watched = ? WHERE user_id = ? AND movie_id = ?`
-	result, err := db.Exec(query, watched, userID, movieID)
-	if err != nil {
-		return err
-	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rowsAffected == 0 {
-		return errors.New("no rows updated, check if the user and movie exist in the watchlist")
-	}
-	return nil
-}
-func RemoveFromWatchlist(userID, movieID int) error {
-	db, err := getDBConnection()
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	query := `DELETE FROM user_watchlist WHERE user_id = ? AND movie_id = ?`
-	result, err := db.Exec(query, userID, movieID)
-	if err != nil {
-		return err
-	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rowsAffected == 0 {
-		return errors.New("no rows deleted, check if the user and movie exist in the watchlist")
-	}
-	return nil
-}
-
-func ValidateUser(username, password string) (m.User, error) {
-	db, err := getDBConnection()
-	if err != nil {
-		return m.User{}, err
-	}
-	defer db.Close()
-
-	var user m.User
-	query := `SELECT id, username, email, password FROM users WHERE username = ?`
-
-	err = db.QueryRow(query, username).Scan(&user.ID, &user.Username, &user.Email, &user.Password)
-	if err == sql.ErrNoRows {
-		return m.User{}, errors.New("invalid credentials")
-	}
-	if err != nil {
-		return m.User{}, err
-	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)); err != nil {
-		return m.User{}, errors.New("invalid credentials")
-	}
-	// No devolver la contraseña en la respuesta
-	user.Password = ""
-
-	return user, nil
-}
-
-func GetUserWatchlist(userID int, watchedFilter *bool) ([]m.WatchlistItem, error) {
-	db, err := getDBConnection()
+// GetUserWatchlist obtiene la lista de películas en la watchlist del usuario
+func (s *DBServiceImpl) GetUserWatchlist(userID int, watchedFilter *bool) ([]m.WatchlistItem, error) {
+	db, err := s.getDBConnection()
 	if err != nil {
 		return []m.WatchlistItem{}, err
 	}
@@ -340,8 +288,9 @@ func GetUserWatchlist(userID int, watchedFilter *bool) ([]m.WatchlistItem, error
 	return watchlist, nil
 }
 
-func GetUserByID(userID int) (m.User, error) {
-	db, err := getDBConnection()
+// GetUserByID obtiene información de un usuario por su ID
+func (s *DBServiceImpl) GetUserByID(userID int) (m.User, error) {
+	db, err := s.getDBConnection()
 	if err != nil {
 		return m.User{}, err
 	}
@@ -360,8 +309,9 @@ func GetUserByID(userID int) (m.User, error) {
 	return user, nil
 }
 
-func UpdateUser(userID int, username, email, password string) error {
-	db, err := getDBConnection()
+// UpdateUser actualiza la información de un usuario
+func (s *DBServiceImpl) UpdateUser(userID int, username, email, password string) error {
+	db, err := s.getDBConnection()
 	if err != nil {
 		return err
 	}
@@ -411,8 +361,9 @@ func UpdateUser(userID int, username, email, password string) error {
 	return nil
 }
 
-func DeleteUser(userID int) error {
-	db, err := getDBConnection()
+// DeleteUser elimina un usuario y sus datos asociados
+func (s *DBServiceImpl) DeleteUser(userID int) error {
+	db, err := s.getDBConnection()
 	if err != nil {
 		return err
 	}
@@ -446,4 +397,108 @@ func DeleteUser(userID int) error {
 	}
 
 	return tx.Commit()
+}
+
+// AddToWatchlist añade una película a la watchlist del usuario
+func (s *DBServiceImpl) AddToWatchlist(userID, movieID int, watched bool) error {
+	db, err := s.getDBConnection()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	// Primero verificamos si ya existe en la watchlist
+	var exists bool
+	err = db.QueryRow("SELECT 1 FROM user_watchlist WHERE user_id = ? AND movie_id = ?", userID, movieID).Scan(&exists)
+
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+
+	// Si ya existe, actualizamos el estado
+	if exists {
+		_, err = db.Exec("UPDATE user_watchlist SET watched = ? WHERE user_id = ? AND movie_id = ?", watched, userID, movieID)
+	} else {
+		// Si no existe, lo insertamos
+		_, err = db.Exec("INSERT INTO user_watchlist (user_id, movie_id, watched) VALUES (?, ?, ?)", userID, movieID, watched)
+	}
+
+	return err
+}
+
+// UpdateWatchedStatus actualiza el estado "watched" de una película en la watchlist
+func (s *DBServiceImpl) UpdateWatchedStatus(userID, movieID int, watched bool) error {
+	db, err := s.getDBConnection()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	result, err := db.Exec("UPDATE user_watchlist SET watched = ? WHERE user_id = ? AND movie_id = ?", watched, userID, movieID)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return errors.New("movie not found in watchlist")
+	}
+
+	return nil
+}
+
+// RemoveFromWatchlist elimina una película de la watchlist del usuario
+func (s *DBServiceImpl) RemoveFromWatchlist(userID, movieID int) error {
+	db, err := s.getDBConnection()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	result, err := db.Exec("DELETE FROM user_watchlist WHERE user_id = ? AND movie_id = ?", userID, movieID)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return errors.New("movie not found in watchlist")
+	}
+
+	return nil
+}
+
+// Función auxiliar para parsear los géneros desde strings concatenados
+func parseGenres(genreIDs, genreNames sql.NullString) []m.Genre {
+	if !genreIDs.Valid || !genreNames.Valid {
+		return []m.Genre{}
+	}
+
+	ids := strings.Split(genreIDs.String, ",")
+	names := strings.Split(genreNames.String, ",")
+
+	// Asegurarnos de que las listas tengan la misma longitud
+	minLength := len(ids)
+	if len(names) < minLength {
+		minLength = len(names)
+	}
+
+	genres := make([]m.Genre, 0, minLength)
+	for i := 0; i < minLength; i++ {
+		id, err := strconv.Atoi(ids[i])
+		if err != nil {
+			continue // Saltamos este género si el ID no es válido
+		}
+		genres = append(genres, m.Genre{
+			ID:   id,
+			Name: names[i],
+		})
+	}
+	return genres
 }
