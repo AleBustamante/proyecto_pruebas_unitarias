@@ -118,55 +118,51 @@ func (m *MockConfigService) GetAllowedOrigins() []string {
 }
 
 // TestSetupLogger prueba la función setupLogger
-// func TestSetupLogger(t *testing.T) {
-// 	// Caso de prueba: modo release
-// 	t.Run("Release mode", func(t *testing.T) {
-// 		// Setup: guarda el modo actual y establece el modo release
-// 		oldMode := gin.Mode()
-// 		gin.SetMode(gin.ReleaseMode)
+func TestSetupLogger(t *testing.T) {
+	// Caso de prueba: modo release
+	t.Run("Release mode", func(t *testing.T) {
+		// Setup: guarda el modo actual y establece el modo release
+		oldMode := gin.Mode()
+		gin.SetMode(gin.ReleaseMode)
 
-// 		// Guardar writer original
-// 		oldWriter := gin.DefaultWriter
+		// Guardar writer original
+		oldWriter := gin.DefaultWriter
 
-// 		// Setup: crea un directorio temporal para el archivo de log
-// 		tempDir := t.TempDir()
-// 		os.Chdir(tempDir)
+		// Asegurar que no existe antes
+		_ = os.Remove("gin.log")
 
-// 		// Ejecutar setupLogger
-// 		setupLogger()
+		// Ejecutar setupLogger
+		setupLogger()
 
-// 		// Verificar que se creó el archivo de log
-// 		_, err := os.Stat("gin.log")
-// 		assert.NoError(t, err, "El archivo de log debería haberse creado")
+		// Verificar que se creó el archivo de log en el directorio actual
+		_, err := os.Stat("gin.log")
+		assert.NoError(t, err, "El archivo de log debería haberse creado")
 
-// 		// Cleanup
-// 		gin.DefaultWriter = oldWriter
-// 		gin.SetMode(oldMode)
-// 	})
+		// Cleanup
+		_ = os.Remove("gin.log")
+		gin.DefaultWriter = oldWriter
+		gin.SetMode(oldMode)
+	})
 
-// 	// Caso de prueba: modo debug (no debe crear archivo)
-// 	t.Run("Debug mode", func(t *testing.T) {
-// 		// Setup: guarda el modo actual y establece el modo debug
-// 		oldMode := gin.Mode()
-// 		gin.SetMode(gin.DebugMode)
+	// Caso de prueba: modo debug (no debe crear archivo)
+	t.Run("Debug mode", func(t *testing.T) {
+		// Setup: guarda el modo actual y establece el modo debug
+		oldMode := gin.Mode()
+		gin.SetMode(gin.DebugMode)
 
-// 		// Guardar writer original
-// 		oldWriter := gin.DefaultWriter
+		// Guardar writer original
+		oldWriter := gin.DefaultWriter
 
-// 		// Setup: crea un directorio temporal para el archivo de log
-// 		tempDir := t.TempDir()
-// 		os.Chdir(tempDir)
+		// Ejecutar setupLogger
+		setupLogger()
 
-// 		// Ejecutar setupLogger
-// 		setupLogger()
+		// Verificar que no se modificó DefaultWriter en modo debug
+		assert.Equal(t, oldWriter, gin.DefaultWriter, "DefaultWriter no debería cambiar en modo debug")
 
-// 		// Verificar que no se modificó DefaultWriter en modo debug
-// 		assert.Equal(t, oldWriter, gin.DefaultWriter, "DefaultWriter no debería cambiar en modo debug")
-
-// 		// Cleanup
-// 		gin.SetMode(oldMode)
-// 	})
-// }
+		// Cleanup
+		gin.SetMode(oldMode)
+	})
+}
 
 // TestSecurityHeadersMiddleware prueba el middleware de cabeceras de seguridad
 func TestSecurityHeadersMiddleware(t *testing.T) {
@@ -1722,102 +1718,52 @@ func TestGenerateToken(t *testing.T) {
 }
 
 // TestAuthMiddleware prueba el middleware de autenticación
-// func TestAuthMiddleware(t *testing.T) {
-// 	gin.SetMode(gin.TestMode)
+func TestAuthMiddleware(t *testing.T) {
+	t.Run("Sin encabezado de autorización", func(t *testing.T) {
+		mockConfig := new(MockConfigService)
+		mockConfig.On("GetJWTSecret").Return("secret").Maybe()
 
-// 	// Casos de prueba
-// 	testCases := []struct {
-// 		name           string
-// 		setupAuth      func(*http.Request)
-// 		setupMock      func(*MockConfigService)
-// 		expectedStatus int
-// 		expectedUserID int
-// 	}{
-// 		{
-// 			name: "Token válido",
-// 			setupAuth: func(req *http.Request) {
-// 				token := createTestToken(t, 123, "test_secret")
-// 				req.Header.Set("Authorization", "Bearer "+token)
-// 			},
-// 			setupMock: func(mockConfig *MockConfigService) {
-// 				mockConfig.On("GetJWTSecret").Return("test_secret")
-// 				mockConfig.On("GetAllowedOrigins").Return([]string{"http://localhost"})
-// 			},
-// 			expectedStatus: http.StatusOK,
-// 			expectedUserID: 123,
-// 		},
-// 		{
-// 			name: "Sin encabezado de autorización",
-// 			setupAuth: func(req *http.Request) {
-// 				// No se añade encabezado
-// 			},
-// 			setupMock: func(mockConfig *MockConfigService) {
-// 				mockConfig.On("GetJWTSecret").Return("test_secret")
-// 				mockConfig.On("GetAllowedOrigins").Return([]string{"http://localhost"})
+		api := &API{
+			Config: mockConfig,
+		}
 
-// 			},
-// 			expectedStatus: http.StatusUnauthorized,
-// 			expectedUserID: 0,
-// 		},
-// 		{
-// 			name: "Token inválido",
-// 			setupAuth: func(req *http.Request) {
-// 				req.Header.Set("Authorization", "Bearer invalid_token")
-// 			},
-// 			setupMock: func(mockConfig *MockConfigService) {
-// 				mockConfig.On("GetJWTSecret").Return("test_secret")
-// 				mockConfig.On("GetAllowedOrigins").Return([]string{"http://localhost"})
-// 			},
-// 			expectedStatus: http.StatusUnauthorized,
-// 			expectedUserID: 0,
-// 		},
-// 	}
+		gin.SetMode(gin.TestMode)
+		router := gin.New()
+		router.Use(api.authMiddleware())
+		router.GET("/protected", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"message": "ok"})
+		})
 
-// 	for _, tc := range testCases {
-// 		t.Run(tc.name, func(t *testing.T) {
-// 			// Configurar mocks
-// 			mockDB := new(MockDBService)
-// 			mockConfig := new(MockConfigService)
-// 			tc.setupMock(mockConfig)
+		req := httptest.NewRequest("GET", "/protected", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
 
-// 			// Crear API
-// 			api := NewAPI(mockDB, mockConfig)
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+	})
 
-// 			// Crear router con middleware
-// 			router := gin.New()
-// 			router.Use(api.authMiddleware())
-// 			router.GET("/test", func(c *gin.Context) {
-// 				userID, exists := c.Get("user_id")
-// 				if exists {
-// 					c.JSON(http.StatusOK, gin.H{"user_id": userID})
-// 				} else {
-// 					c.JSON(http.StatusOK, gin.H{"user_id": nil})
-// 				}
-// 			})
+	t.Run("Token inválido", func(t *testing.T) {
+		mockConfig := new(MockConfigService)
+		mockConfig.On("GetJWTSecret").Return("secret").Maybe()
 
-// 			// Crear solicitud
-// 			req, _ := http.NewRequest(http.MethodGet, "/test", nil)
-// 			tc.setupAuth(req)
-// 			resp := httptest.NewRecorder()
+		api := &API{
+			Config: mockConfig,
+		}
 
-// 			// Ejecutar
-// 			router.ServeHTTP(resp, req)
+		gin.SetMode(gin.TestMode)
+		router := gin.New()
+		router.Use(api.authMiddleware())
+		router.GET("/protected", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"message": "ok"})
+		})
 
-// 			// Verificar status
-// 			assert.Equal(t, tc.expectedStatus, resp.Code)
+		req := httptest.NewRequest("GET", "/protected", nil)
+		req.Header.Set("Authorization", "Bearer token-invalido")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
 
-// 			// Si esperamos éxito, verificar el ID de usuario
-// 			if tc.expectedStatus == http.StatusOK {
-// 				var respBody map[string]interface{}
-// 				err := json.Unmarshal(resp.Body.Bytes(), &respBody)
-// 				require.NoError(t, err)
-// 				assert.Equal(t, float64(tc.expectedUserID), respBody["user_id"])
-// 			}
-
-// 			mockConfig.AssertExpectations(t)
-// 		})
-// 	}
-// }
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+}
 
 // Helper para crear tokens JWT de prueba
 func createTestToken(t *testing.T, userID int, secret string) string {
